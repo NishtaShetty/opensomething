@@ -44,20 +44,93 @@ export async function submitIncident(
     throw new Error(error.message)
   }
 
-  // AI Pipeline Mock
-  await new Promise(r => setTimeout(r, 1000));
-  
-  let criticality = 'Medium';
-  let suggestedDept = 'Maintenance';
-  let estimatedSLAHours = 48;
-  const lowerDesc = description.toLowerCase();
-  
-  if (category === 'Waterlogging' || lowerDesc.includes('flood') || lowerDesc.includes('water')) {
-    criticality = 'High'; suggestedDept = 'Plumbing'; estimatedSLAHours = 12;
-  } else if (category === 'PowerOutage' || lowerDesc.includes('electricity') || lowerDesc.includes('power')) {
-    criticality = 'Critical'; suggestedDept = 'Electrical'; estimatedSLAHours = 4;
-  } else if (category === 'LiftBreakdown') {
-    criticality = 'Critical'; suggestedDept = 'Elevator'; estimatedSLAHours = 6;
+  // --- Real CLIP Validator Pipeline ---
+  // Map the form category name to the Samriddhi CAT ID
+  const categoryToCatId: Record<string, string> = {
+    'Waterlogging': 'CAT001',
+    'PowerOutage': 'CAT004',
+    'LiftBreakdown': 'CAT007',
+    'FireSafety': 'CAT005',
+  };
+  const reportedCatId = categoryToCatId[category] || undefined;
+
+  let clipAction = 'FLAG';
+  let clipSeverity = 'UNKNOWN';
+  let clipConfidence = 0;
+  let clipReason = 'CLIP validation unavailable.';
+  let clipPredictedCatId = '';
+
+  try {
+    const ipfsUrl = `https://gateway.pinata.cloud/ipfs/${imageHash}`;
+    console.log(`[CLIP Pipe] Fetching image from IPFS gateway: ${ipfsUrl}`);
+    const imgRes = await fetch(ipfsUrl);
+    console.log(`[CLIP Pipe] IPFS Gateway response: ${imgRes.status} ${imgRes.statusText}`);
+    
+    if (imgRes.ok) {
+      const imgBlob = await imgRes.blob();
+      const ext = imgBlob.type.includes('png') ? 'png' : 'jpg';
+      console.log(`[CLIP Pipe] Image blob fetched. Size: ${imgBlob.size} bytes, Type: ${imgBlob.type}`);
+
+      const clipForm = new FormData();
+      clipForm.append('image', imgBlob, `incident.${ext}`);
+      if (reportedCatId) clipForm.append('reported_category', reportedCatId);
+      clipForm.append('incident_status', 'REPORTED');
+
+      const CLIP_API = process.env.CLIP_VALIDATOR_URL || 'http://localhost:5001';
+      console.log(`[CLIP Pipe] Posting to CLIP API: ${CLIP_API}/classify with reported_category=${reportedCatId}`);
+      const clipRes = await fetch(`${CLIP_API}/classify`, {
+        method: 'POST',
+        body: clipForm,
+      });
+      console.log(`[CLIP Pipe] CLIP response: ${clipRes.status} ${clipRes.statusText}`);
+
+      if (clipRes.ok) {
+        const clipData = await clipRes.json();
+        clipAction = clipData.action ?? 'FLAG';
+        clipSeverity = clipData.severity ?? 'UNKNOWN';
+        clipConfidence = clipData.confidence ?? 0;
+        clipReason = clipData.reason ?? 'No reason provided.';
+        clipPredictedCatId = clipData.predicted_category_id ?? '';
+        console.log(`[CLIP Pipe] Classification Success. Action: ${clipAction}, Severity: ${clipSeverity}, Predicted: ${clipPredictedCatId}`);
+      } else {
+        const errorText = await clipRes.text();
+        console.error(`[CLIP Pipe] CLIP API Error details: ${errorText}`);
+      }
+    } else {
+      console.error(`[CLIP Pipe] Failed to fetch image from Pinata gateway.`);
+    }
+  } catch (e) {
+    console.error('[CLIP Pipe] Exception occurred during validation:', e);
+  }
+
+  // Map CLIP severity → Nishta criticality labels
+  const severityMap: Record<string, string> = {
+    RED: 'Critical', YELLOW: 'High', INFO: 'Medium', REJECT: 'Low', UNKNOWN: 'Medium',
+  };
+  const criticality = severityMap[clipSeverity] ?? 'Medium';
+
+  // Map predicted category or category string → Supabase department_enum
+  const deptMap: Record<string, string> = {
+    'CAT001': 'Plumbing',
+    'CAT004': 'Electrical',
+    'CAT007': 'Elevator',
+    'CAT005': 'FireSafety',
+    'Waterlogging': 'Plumbing',
+    'PowerOutage': 'Electrical',
+    'LiftBreakdown': 'Elevator',
+    'FireSafety': 'FireSafety',
+  };
+  const suggestedDept = deptMap[clipPredictedCatId] || deptMap[category] || 'Maintenance';
+
+  // Map CLIP severity + Category to SLA hours (Safety critical gets 6 hours)
+  let estimatedSlaHours = 48;
+  if (clipSeverity === 'RED') {
+    // Safety critical auto-escalations get 6 hours
+    estimatedSlaHours = 6;
+  } else if (clipSeverity === 'YELLOW') {
+    estimatedSlaHours = 12;
+  } else if (clipSeverity === 'INFO') {
+    estimatedSlaHours = 24;
   }
 
   const { error: aiError } = await supabase
@@ -65,9 +138,9 @@ export async function submitIncident(
     .update({
       ai_criticality: criticality,
       ai_suggested_dept: suggestedDept,
-      ai_estimated_sla_hours: estimatedSLAHours,
-      ai_reasoning: `Based on the keywords and category '${category}', AI routed to dept ${suggestedDept} with SLA ${estimatedSLAHours}h.`,
-      status: 'ai_checked'
+      ai_estimated_sla_hours: estimatedSlaHours,
+      ai_reasoning: `[CLIP ViT-L-14] ${clipReason} | Decision: ${clipAction} | Confidence: ${Math.round(clipConfidence * 100)}%`,
+      status: clipAction === 'REJECT' ? 'rejected' : 'ai_checked'
     })
     .eq('id', incident.id)
 

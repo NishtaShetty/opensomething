@@ -140,30 +140,63 @@ export default function ResidentClient({ incidents }: { incidents: any[] }) {
           {incidents.length === 0 ? (
             <div className="text-gray-500 text-center py-10 glass-panel">No incidents reported yet.</div>
           ) : (
-            incidents.map((incident) => (
-              <div key={incident.id} className="glass-panel p-5 flex flex-col sm:flex-row gap-6 items-start sm:items-center hover:bg-white/5 transition-colors">
-                <div className="w-full sm:w-32 h-24 bg-gray-800 rounded-lg overflow-hidden flex-shrink-0 relative">
-                   <img src={`https://gateway.pinata.cloud/ipfs/${incident.image_hash}`} className="w-full h-full object-cover" alt="incident" />
-                </div>
-                <div className="flex-1">
-                  <div className="flex justify-between items-start mb-2">
-                    <h4 className="font-semibold text-lg">{incident.category}</h4>
-                    <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-                      incident.status === 'pending_ai' ? 'badge-pending' : 
-                      incident.status === 'ai_checked' ? 'bg-primary/20 text-primary' :
-                      incident.status === 'stamped' ? 'bg-success/20 text-success' : 'bg-gray-800 text-gray-300'
-                    }`}>
-                      {incident.status.replace('_', ' ').toUpperCase()}
-                    </span>
+            incidents.map((incident) => {
+              // Parse CLIP verdict from ai_reasoning prefix
+              const reasoning: string = incident.ai_reasoning || '';
+              const clipDecision = reasoning.includes('Decision: ACCEPT') ? 'ACCEPT'
+                : reasoning.includes('Decision: REJECT') ? 'REJECT'
+                : reasoning.includes('Decision: FLAG') ? 'FLAG'
+                : null;
+              const severity: string = incident.ai_criticality || '';
+              const decisionColor = clipDecision === 'ACCEPT' ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+                : clipDecision === 'REJECT' ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                : clipDecision === 'FLAG' ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
+                : 'bg-gray-700 text-gray-400';
+              const severityColor = severity === 'Critical' ? 'text-red-400'
+                : severity === 'High' ? 'text-orange-400'
+                : severity === 'Medium' ? 'text-yellow-400' : 'text-gray-400';
+
+              return (
+                <div key={incident.id} className="glass-panel p-5 flex flex-col sm:flex-row gap-6 items-start sm:items-center hover:bg-white/5 transition-colors">
+                  <div className="w-full sm:w-32 h-24 bg-gray-800 rounded-lg overflow-hidden flex-shrink-0 relative">
+                     <img src={`https://gateway.pinata.cloud/ipfs/${incident.image_hash}`} className="w-full h-full object-cover" alt="incident" />
                   </div>
-                  <p className="text-sm text-gray-400 mb-3">{incident.description}</p>
-                  <div className="text-xs text-gray-500 font-mono flex justify-between">
-                    <span>ID: {incident.id.slice(0,8)}...</span>
-                    <span>{new Date(incident.created_at).toLocaleDateString()}</span>
+                  <div className="flex-1">
+                    <div className="flex flex-wrap justify-between items-start mb-2 gap-2">
+                      <h4 className="font-semibold text-lg">{incident.category}</h4>
+                      <div className="flex gap-2 flex-wrap">
+                        {clipDecision && (
+                          <span className={`px-2 py-0.5 rounded-full text-xs font-bold tracking-wide ${decisionColor}`}>
+                            🤖 {clipDecision}
+                          </span>
+                        )}
+                        <span className={`px-3 py-1 rounded-full text-xs font-medium ${
+                          incident.status === 'pending_ai' ? 'badge-pending' : 
+                          incident.status === 'ai_checked' ? 'bg-primary/20 text-primary' :
+                          incident.status === 'rejected' ? 'bg-red-500/20 text-red-400' :
+                          incident.status === 'stamped' ? 'bg-success/20 text-success' : 'bg-gray-800 text-gray-300'
+                        }`}>
+                          {incident.status.replace('_', ' ').toUpperCase()}
+                        </span>
+                      </div>
+                    </div>
+                    <p className="text-sm text-gray-400 mb-2">{incident.description}</p>
+                    {severity && (
+                      <p className="text-xs mb-2">
+                        Severity: <span className={`font-semibold ${severityColor}`}>{severity}</span>
+                      </p>
+                    )}
+                    {reasoning && (
+                      <p className="text-xs text-gray-500 italic mb-2 line-clamp-2">{reasoning}</p>
+                    )}
+                    <div className="text-xs text-gray-500 font-mono flex justify-between">
+                      <span>ID: {incident.id.slice(0,8)}...</span>
+                      <span>{new Date(incident.created_at).toLocaleDateString()}</span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))
+              );
+            })
           )}
 
         </div>

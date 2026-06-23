@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { login, signup } from './actions'
+import { AlertCircle } from 'lucide-react'
 
 export default function LoginPage() {
   const [isLogin, setIsLogin] = useState(true)

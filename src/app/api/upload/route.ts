@@ -10,17 +10,16 @@ export async function POST(request: Request) {
     }
     
     const url = "https://api.pinata.cloud/pinning/pinFileToIPFS";
-    
-    const pinataFormData = new FormData();
-    pinataFormData.append("file", file);
+    const formData = new FormData();
+    formData.append("file", file);
     
     const response = await fetch(url, {
         method: "POST",
         headers: {
-            "pinata_api_key": process.env.PINATA_API_KEY || "8fd9664a1522bb0dd810",
-            "pinata_secret_api_key": process.env.PINATA_SECRET_API_KEY || "921a945f7cadcb249aadc276f3fa3d5d0edc87ddd09f0a39565135c52550372d"
+            "pinata_api_key": process.env.PINATA_API_KEY as string,
+            "pinata_secret_api_key": process.env.PINATA_SECRET_API_KEY as string
         },
-        body: pinataFormData
+        body: formData
     });
 
     if (!response.ok) {

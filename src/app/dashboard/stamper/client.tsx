@@ -2,11 +2,14 @@
 
 import { useState } from 'react'
 import { stampIncidentOnChain, createAssignmentOnChain, createResolutionOnChain } from '@/lib/web3/actions'
-import { markIncidentStamped, markAssignmentStamped, markResolutionStamped } from '@/lib/actions/stamper'
-import { ShieldCheck, Cpu, Clock, CheckCircle2, Briefcase, Wrench } from 'lucide-react'
+import { markIncidentStamped, markAssignmentStamped, markResolutionStamped, assignVendorToIncident, cancelAssignment } from '@/lib/actions/stamper'
+import { ShieldCheck, Cpu, Clock, CheckCircle2, Briefcase, Wrench, Star } from 'lucide-react'
 
-export default function StamperClient({ incidents, assignments, resolutions }: { incidents: any[], assignments: any[], resolutions: any[] }) {
+export default function StamperClient({ incidents, assignments, resolutions, stampedIncidents = [], vendors = [] }: { incidents: any[], assignments: any[], resolutions: any[], stampedIncidents?: any[], vendors?: any[] }) {
   const [processingId, setProcessingId] = useState<string | null>(null)
+  const [selectedVendorIds, setSelectedVendorIds] = useState<Record<string, string>>({})
+  const [vendorSLA, setVendorSLA] = useState<Record<string, number>>({})
+  const [resolutionRatings, setResolutionRatings] = useState<Record<string, number>>({})
 
   async function handleStampIncident(incident: any) {
     setProcessingId(incident.id)
@@ -15,7 +18,7 @@ export default function StamperClient({ incidents, assignments, resolutions }: {
       // here we pass dummy ints just for the hackathon UI flow to succeed
       const tx = await stampIncidentOnChain(
         incident.id, 
-        { reporter: incident.reporter_wallet || "0x0000000000000000000000000000000000000000", category: 0, description: incident.description, imageHash: incident.image_hash, gpsCoords: incident.gps_coords, note: "" },
+        { reporter: (!incident.reporter_wallet || incident.reporter_wallet === "0x0000000000000000000000000000000000000000") ? "0x1234567890123456789012345678901234567890" : incident.reporter_wallet, category: 0, description: incident.description, imageHash: incident.image_hash, gpsCoords: incident.gps_coords, note: "" },
         { criticality: 1, suggestedDept: 1, estimatedSLAHours: incident.ai_estimated_sla_hours || 24 }
       )
       await markIncidentStamped(incident.id, tx.hash || "0x_dummy_hash")
@@ -23,6 +26,35 @@ export default function StamperClient({ incidents, assignments, resolutions }: {
     } catch (e: any) {
       console.error(e)
       alert("Failed to stamp: " + e.message)
+    } finally {
+      setProcessingId(null)
+    }
+  }
+
+  async function handleAssignVendor(incidentId: string) {
+    const vId = selectedVendorIds[incidentId]
+    const sla = vendorSLA[incidentId] || 24 
+    if (!vId) return alert("Select a vendor")
+    
+    setProcessingId(incidentId + '_assign')
+    try {
+      await assignVendorToIncident(incidentId, vId, sla)
+      alert("Vendor assigned! It is now pending vendor approval.")
+    } catch (e: any) {
+      alert("Error: " + e.message)
+    } finally {
+      setProcessingId(null)
+    }
+  }
+
+  async function handleCancelAssignment(assignmentId: string) {
+    if (!confirm("Cancel this assignment and re-assign?")) return
+    setProcessingId(assignmentId + '_cancel')
+    try {
+      await cancelAssignment(assignmentId)
+      alert("Assignment cancelled.")
+    } catch(e: any) {
+      alert("Error: " + e.message)
     } finally {
       setProcessingId(null)
     }
@@ -46,13 +78,14 @@ export default function StamperClient({ incidents, assignments, resolutions }: {
   }
 
   async function handleStampResolution(resolution: any) {
+    const rating = resolutionRatings[resolution.id] || 5
     setProcessingId(resolution.id)
     try {
       const tx = await createResolutionOnChain(
         resolution.id,
         { incidentId: resolution.incident_id, assignmentId: resolution.assignment_id, vendorId: resolution.vendor_id, beforeImageHash: resolution.before_image_hash, afterImageHash: resolution.after_image_hash, costOfRepair: resolution.cost_of_repair, materialsUsed: resolution.materials_used, completedAt: Math.floor(new Date(resolution.completed_at).getTime() / 1000) }
       )
-      await markResolutionStamped(resolution.id, tx.hash || "0x_dummy_hash")
+      await markResolutionStamped(resolution.id, tx.hash || "0x_dummy_hash", rating, resolution.vendor_id)
       alert("Resolution Stamped Successfully!")
     } catch (e: any) {
       console.error(e)
@@ -143,26 +176,101 @@ export default function StamperClient({ incidents, assignments, resolutions }: {
       {/* Assignments Section */}
       <div className="glass-panel p-6 border-l-4 border-l-warning">
         <h3 className="text-xl font-semibold mb-6 flex items-center gap-2">
-          <Briefcase className="text-warning" /> Pending Vendor Assignments (Blocks)
+          <Briefcase className="text-warning" /> Pending Vendor Assignments
         </h3>
+
+        <div className="mb-8">
+          <h4 className="text-lg font-medium mb-3 text-gray-300">Awaiting Vendor Selection</h4>
+          {stampedIncidents.length === 0 ? (
+            <div className="text-gray-500 text-sm italic">No incidents waiting for vendor assignment.</div>
+          ) : (
+            stampedIncidents.map(inc => {
+              const availableVendors = vendors.filter(v => v.service_type === inc.ai_suggested_dept)
+              return (
+                <div key={inc.id} className="bg-black/20 rounded-xl p-4 border border-white/5 mb-3 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                  <div>
+                    <div className="font-medium text-white">Incident {inc.id.slice(0,8)} - {inc.ai_suggested_dept}</div>
+                    <div className="text-sm text-gray-400 truncate max-w-xs">{inc.description}</div>
+                  </div>
+                  <div className="flex items-center gap-3 w-full sm:w-auto">
+                    <select 
+                      className="glass-input p-2 text-sm rounded-lg"
+                      value={selectedVendorIds[inc.id] || ''}
+                      onChange={e => setSelectedVendorIds({...selectedVendorIds, [inc.id]: e.target.value})}
+                    >
+                      <option value="">Select Vendor...</option>
+                      {availableVendors.map(v => (
+                        <option key={v.id} value={v.id}>{v.name} (⭐ {v.rating || 5})</option>
+                      ))}
+                    </select>
+                    <input 
+                      type="number" 
+                      placeholder="SLA (hrs)"
+                      className="glass-input p-2 text-sm rounded-lg w-24"
+                      value={vendorSLA[inc.id] || ''}
+                      onChange={e => setVendorSLA({...vendorSLA, [inc.id]: parseInt(e.target.value)})}
+                    />
+                    <button 
+                      onClick={() => handleAssignVendor(inc.id)}
+                      disabled={processingId === inc.id + '_assign'}
+                      className="glass-button-secondary text-sm px-4"
+                    >
+                      {processingId === inc.id + '_assign' ? 'Assigning...' : 'Assign'}
+                    </button>
+                  </div>
+                </div>
+              )
+            })
+          )}
+        </div>
+
+        <h4 className="text-lg font-medium mb-3 text-gray-300">Ready to Block / Awaiting Vendor Approval</h4>
         {assignments.length === 0 ? (
           <div className="text-gray-500 text-center py-6 bg-black/20 rounded-xl">No pending assignments.</div>
         ) : (
-          assignments.map((assignment) => (
-            <div key={assignment.id} className="bg-black/20 rounded-xl p-5 border border-white/5 mb-4 flex justify-between items-center">
+          assignments.map((assignment) => {
+            const isPendingApproval = assignment.status === 'pending_vendor';
+            // Mock SLA logic: Check if created > SLA hours ago
+            const createdTime = new Date(assignment.created_at).getTime();
+            const now = Date.now();
+            // Using a mock SLA acceptance check of 2 hours for demonstration
+            const slaBreached = isPendingApproval && (now - createdTime > 2 * 60 * 60 * 1000); 
+
+            return (
+            <div key={assignment.id} className="bg-black/20 rounded-xl p-5 border border-white/5 mb-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                <div>
                  <h4 className="font-semibold text-lg mb-1">Incident ID: {assignment.incident_id.slice(0,8)}</h4>
-                 <p className="text-sm text-gray-400">Vendor ID: {assignment.vendor_id.slice(0,8)} • SLA: {assignment.sla_hours} Hrs</p>
+                 <p className="text-sm text-gray-400 flex items-center gap-2">
+                   Vendor ID: {assignment.vendor_id.slice(0,8)} • SLA: {assignment.sla_hours} Hrs
+                   <span className={`px-2 py-0.5 rounded text-xs ${isPendingApproval ? 'bg-blue-500/20 text-blue-400' : 'bg-green-500/20 text-green-400'}`}>
+                     {isPendingApproval ? 'Pending Vendor Approval' : 'Vendor Approved'}
+                   </span>
+                 </p>
+                 {slaBreached && (
+                   <p className="text-red-400 text-xs mt-2 font-medium">⚠️ Vendor has not responded within expected time!</p>
+                 )}
                </div>
-               <button 
-                  onClick={() => handleStampAssignment(assignment)}
-                  disabled={processingId === assignment.id}
-                  className="glass-button-secondary border-warning/50 text-warning hover:border-warning"
-               >
-                  {processingId === assignment.id ? 'Signing...' : 'Create Assignment Block'}
-               </button>
+               <div className="flex gap-2">
+                 {isPendingApproval ? (
+                   <button 
+                      onClick={() => handleCancelAssignment(assignment.id)}
+                      disabled={processingId === assignment.id + '_cancel'}
+                      className="glass-button-secondary border-red-500/50 text-red-400 hover:border-red-400"
+                   >
+                     {processingId === assignment.id + '_cancel' ? 'Cancelling...' : 'Cancel & Re-assign'}
+                   </button>
+                 ) : (
+                   <button 
+                      onClick={() => handleStampAssignment(assignment)}
+                      disabled={processingId === assignment.id}
+                      className="glass-button-secondary border-warning/50 text-warning hover:border-warning"
+                   >
+                      {processingId === assignment.id ? 'Signing...' : 'Create Assignment Block'}
+                   </button>
+                 )}
+               </div>
             </div>
-          ))
+          )})
         )}
       </div>
 
@@ -175,10 +283,21 @@ export default function StamperClient({ incidents, assignments, resolutions }: {
           <div className="text-gray-500 text-center py-6 bg-black/20 rounded-xl">No pending resolutions.</div>
         ) : (
           resolutions.map((res) => (
-            <div key={res.id} className="bg-black/20 rounded-xl p-5 border border-white/5 mb-4 flex justify-between items-center">
+            <div key={res.id} className="bg-black/20 rounded-xl p-5 border border-white/5 mb-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                <div>
                  <h4 className="font-semibold text-lg mb-1">Resolution for Incident: {res.incident_id.slice(0,8)}</h4>
-                 <p className="text-sm text-gray-400">Cost: ₹{res.cost_of_repair} • Materials: {res.materials_used}</p>
+                 <p className="text-sm text-gray-400 mb-2">Cost: ₹{res.cost_of_repair} • Materials: {res.materials_used}</p>
+                 <div className="flex items-center gap-1">
+                   <span className="text-xs text-gray-400 mr-2">Rate Vendor:</span>
+                   {[1,2,3,4,5].map(star => (
+                     <Star 
+                       key={star} 
+                       size={16} 
+                       className={`cursor-pointer transition-colors ${(resolutionRatings[res.id] || 5) >= star ? 'text-yellow-400 fill-yellow-400' : 'text-gray-500'}`}
+                       onClick={() => setResolutionRatings({...resolutionRatings, [res.id]: star})}
+                     />
+                   ))}
+                 </div>
                </div>
                <button 
                   onClick={() => handleStampResolution(res)}

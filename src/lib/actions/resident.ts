@@ -34,7 +34,7 @@ export async function submitIncident(
       gps_coords: gpsCoords,
       image_hash: imageHash,
       status: 'pending_ai',
-      reporter_wallet: '0x0000000000000000000000000000000000000000'
+      reporter_wallet: '0x1234567890123456789012345678901234567890'
     })
     .select()
     .single()
